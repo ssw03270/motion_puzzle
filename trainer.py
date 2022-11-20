@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 from model import (Generator)
 from radam import RAdam
-
+from collections import OrderedDict
 
 class Trainer(nn.Module):
     def __init__(self, config):
@@ -30,7 +30,8 @@ class Trainer(nn.Module):
 
         self.device = 'cpu'
         if torch.cuda.is_available():
-            self.device = torch.cuda.current_device()
+            # self.device = torch.cuda.current_device()
+            self.device = torch.device("cuda:{}".format(torch.cuda.current_device()))
             self.gen = nn.DataParallel(self.gen).to(self.device)
             self.gen_ema = nn.DataParallel(self.gen_ema).to(self.device)
 
@@ -39,10 +40,10 @@ class Trainer(nn.Module):
 
         def run_epoch(epoch):
             self.gen.train()
-            
-            pbar = tqdm(enumerate(zip(loader['train_src'], loader['train_tar'])), 
+
+            pbar = tqdm(enumerate(zip(loader['train_src'], loader['train_tar'])),
                         total=len(loader['train_src']))
-            
+
             for it, (con_data, sty_data) in pbar:
                 gen_loss_total, gen_loss_dict = self.compute_gen_loss(con_data, sty_data)
                 self.gen_opt.zero_grad()
@@ -64,13 +65,13 @@ class Trainer(nn.Module):
                 if (it+1) % config['log_every'] == 0:
                     for k, v in gen_loss_dict.items():
                         wirter.add_scalar(k, v, epoch*len(loader['train_src'])+it)
-                        
+
         for epoch in range(config['max_epochs']):
             run_epoch(epoch)
 
             if (epoch+1) % config['save_every'] == 0:
                 self.save_checkpoint(epoch+1)
-    
+
     def compute_gen_loss(self, xa_data, xb_data):
         config = self.config
 
@@ -93,7 +94,7 @@ class Trainer(nn.Module):
                  + config['cyc_sty_w'] * loss_cyc_sty
                  + config['sm_rec_w'] * loss_sm_rec
                  + config['sm_cyc_w'] * loss_sm_cyc)
-            
+
         l_dict = {'loss_total': l_total,
                   'loss_recon': loss_recon,
                   'loss_cyc_con': loss_cyc_con,
@@ -102,7 +103,7 @@ class Trainer(nn.Module):
                   'loss_sm_cyc': loss_sm_cyc}
 
         return l_total, l_dict
-    
+
     @torch.no_grad()
     def test(self, xa, xb):
         config = self.config
@@ -124,14 +125,14 @@ class Trainer(nn.Module):
                  + config['cyc_sty_w'] * loss_cyc_sty
                  + config['sm_rec_w'] * loss_sm_rec
                  + config['sm_cyc_w'] * loss_sm_cyc)
-            
+
         l_dict = {'loss_total': l_total,
                   'loss_recon': loss_recon,
                   'loss_cyc_con': loss_cyc_con,
                   'loss_cyc_sty': loss_cyc_sty,
                   'loss_sm_rec': loss_sm_rec,
                   'loss_sm_cyc': loss_sm_cyc}
-        
+
         out_dict = {
             "recon_con": xaa,
             "stylized": xab,
@@ -149,25 +150,37 @@ class Trainer(nn.Module):
         raw_gen_ema = self.gen_ema.module if hasattr(self.gen_ema, "module") else self.gen_ema
 
         logger.info("saving %s", gen_path)
-        torch.save({'gen': raw_gen.state_dict(), 
+        torch.save({'gen': raw_gen.state_dict(),
                     'gen_ema': raw_gen_ema.state_dict()}, gen_path)
-        
+
         print('Saved model at epoch %d' % epoch)
-    
+
     def load_checkpoint(self, model_path=None):
         if not model_path:
             model_dir = self.model_dir
             model_path = get_model_list(model_dir, "gen")   # last model
 
         state_dict = torch.load(model_path, map_location=self.device)
-        self.gen.load_state_dict(state_dict['gen'])
-        self.gen_ema.load_state_dict(state_dict['gen_ema'])
+        # self.gen.load_state_dict(state_dict['gen'])
+        # self.gen_ema.load_state_dict(state_dict['gen_ema'])
+        gen_dict = OrderedDict()
+        for key, value in state_dict["gen"].items():
+            if not key.startswith("module."):
+                key = "module." + key
+            gen_dict[key] = value
+        self.gen.load_state_dict(gen_dict)
+        gen_ema_dict = OrderedDict()
+        for key, value in state_dict["gen_ema"].items():
+            if not key.startswith("module."):
+                key = "module." + key
+            gen_ema_dict[key] = value
+        self.gen_ema.load_state_dict(gen_ema_dict)
 
         epochs = int(model_path[-6:-3])
         print('Load from epoch %d' % epochs)
 
         return epochs
-    
+
     # def load_checkpoint(self, model_path=None):
     #     if not model_path:
     #         model_dir = self.model_dir
@@ -180,7 +193,7 @@ class Trainer(nn.Module):
 
     #     # if self.device == 'cpu':
     #     #     state_dict = torch.load(model_path, map_location=self.device)
-    #     # else: 
+    #     # else:
     #     #     state_dict = torch.load(model_path)
 
     #     self.gen.load_state_dict(state_dict['gen'])
@@ -224,4 +237,3 @@ if __name__ == '__main__':
 
     # print(in_xb1)
 
-    
